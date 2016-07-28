@@ -960,7 +960,7 @@ namespace ts {
                 return false;
             }
             const expression = (<ExpressionWithTypeArguments>parentClassExpression).expression;
-            if (resolveEntityName(expression, SymbolFlags.Interface, /*ignoreErrors*/ true)) {
+            if (resolveEntityNameOld(expression, SymbolFlags.Interface, /*ignoreErrors*/ true)) {
                 error(errorLocation, Diagnostics.Cannot_extend_an_interface_0_Did_you_mean_implements, getTextOfNode(expression));
                 return true;
             }
@@ -1249,8 +1249,17 @@ namespace ts {
             return symbol.parent ? getFullyQualifiedName(symbol.parent) + "." + symbolToString(symbol) : symbolToString(symbol);
         }
 
+
+        function resolveEntityNameOld(name: Node, meaning: SymbolFlags, ignoreErrors?: boolean, dontResolveAlias?: boolean): Symbol {
+            //booo
+            return resolveEntityName(<Identifier>name, meaning, ignoreErrors, dontResolveAlias);
+        }
+
         // Resolves a qualified name and any involved aliases
-        function resolveEntityName(name: EntityName | Expression, meaning: SymbolFlags, ignoreErrors?: boolean, dontResolveAlias?: boolean): Symbol {
+        //The type of `name` is al wrong. It's not just any expression!!!
+        //It's pretty obvious that it must be an Identifier or QualifiedName or PropertyAccessExpression!!!
+        //(or missing...)
+        function resolveEntityName(name: EntityName | PropertyAccessExpression, meaning: SymbolFlags, ignoreErrors?: boolean, dontResolveAlias?: boolean): Symbol {
             if (nodeIsMissing(name)) {
                 return undefined;
             }
@@ -1265,7 +1274,8 @@ namespace ts {
                 }
             }
             else if (name.kind === SyntaxKind.QualifiedName || name.kind === SyntaxKind.PropertyAccessExpression) {
-                const left = name.kind === SyntaxKind.QualifiedName ? (<QualifiedName>name).left : (<PropertyAccessExpression>name).expression;
+                //TODO: the cast of a property access' expression is dubious!!!!!!
+                const left = name.kind === SyntaxKind.QualifiedName ? (<QualifiedName>name).left : <Identifier | PropertyAccessExpression>(<PropertyAccessExpression>name).expression;
                 const right = name.kind === SyntaxKind.QualifiedName ? (<QualifiedName>name).right : (<PropertyAccessExpression>name).name;
 
                 const namespace = resolveEntityName(left, SymbolFlags.Namespace, ignoreErrors);
@@ -3603,7 +3613,7 @@ namespace ts {
                     if (baseTypeNodes) {
                         for (const node of baseTypeNodes) {
                             if (isSupportedExpressionWithTypeArguments(node)) {
-                                const baseSymbol = resolveEntityName(node.expression, SymbolFlags.Type, /*ignoreErrors*/ true);
+                                const baseSymbol = resolveEntityNameOld(node.expression, SymbolFlags.Type, /*ignoreErrors*/ true);
                                 if (!baseSymbol || !(baseSymbol.flags & SymbolFlags.Interface) || getDeclaredTypeOfClassOrInterface(baseSymbol).thisType) {
                                     return false;
                                 }
@@ -4912,7 +4922,7 @@ namespace ts {
                 return unknownSymbol;
             }
 
-            return resolveEntityName(typeReferenceName, SymbolFlags.Type) || unknownSymbol;
+            return resolveEntityNameOld(typeReferenceName, SymbolFlags.Type) || unknownSymbol;
         }
 
         function getTypeReferenceType(node: TypeReferenceNode | ExpressionWithTypeArguments | JSDocTypeReference, symbol: Symbol) {
@@ -4956,7 +4966,7 @@ namespace ts {
                     const typeNameOrExpression = node.kind === SyntaxKind.TypeReference ? (<TypeReferenceNode>node).typeName :
                         isSupportedExpressionWithTypeArguments(<ExpressionWithTypeArguments>node) ? (<ExpressionWithTypeArguments>node).expression :
                             undefined;
-                    symbol = typeNameOrExpression && resolveEntityName(typeNameOrExpression, SymbolFlags.Type) || unknownSymbol;
+                    symbol = typeNameOrExpression && resolveEntityNameOld(typeNameOrExpression, SymbolFlags.Type) || unknownSymbol;
                     type = symbol === unknownSymbol ? unknownType :
                         symbol.flags & (SymbolFlags.Class | SymbolFlags.Interface) ? getTypeFromClassOrInterfaceReference(node, symbol) :
                             symbol.flags & SymbolFlags.TypeAlias ? getTypeFromTypeAliasReference(node, symbol) :
@@ -17326,7 +17336,9 @@ namespace ts {
             }
 
             if (entityName.parent.kind === SyntaxKind.ExportAssignment) {
-                return resolveEntityName(<Identifier>entityName,
+                //Old: <Identifier>entityName
+                //But just because its parent is `export default` doesn't make it an identifier!
+                return resolveEntityName(entityName,
                     /*all meanings*/ SymbolFlags.Value | SymbolFlags.Type | SymbolFlags.Namespace | SymbolFlags.Alias);
             }
 
@@ -17441,9 +17453,13 @@ namespace ts {
 
             switch (node.kind) {
                 case SyntaxKind.Identifier:
-                case SyntaxKind.PropertyAccessExpression:
                 case SyntaxKind.QualifiedName:
-                    return getSymbolOfEntityNameOrPropertyAccessExpression(<EntityName | PropertyAccessExpression>node);
+                    return getSymbolOfEntityNameOrPropertyAccessExpression(<EntityName>node);
+
+                case SyntaxKind.PropertyAccessExpression:
+                    if (propertyAccessExpressionIsLikeQualifiedName(<PropertyAccessExpression>node)) {
+                        return getSymbolOfEntityNameOrPropertyAccessExpression(<PropertyAccessExpression>node)
+                    }
 
                 case SyntaxKind.ThisKeyword:
                     const container = getThisContainer(node, /*includeArrowFunctions*/ false);
@@ -17493,6 +17509,19 @@ namespace ts {
             }
             return undefined;
         }
+
+        //move
+        function propertyAccessExpressionIsLikeQualifiedName(node: PropertyAccessExpression): boolean {
+            switch (node.expression.kind) {
+                case SyntaxKind.Identifier:
+                    return true;
+                case SyntaxKind.PropertyAccessExpression:
+                    return propertyAccessExpressionIsLikeQualifiedName(<PropertyAccessExpression>node.expression);
+                default:
+                    return false;
+            }
+        }
+
 
         function getShorthandAssignmentValueSymbol(location: Node): Symbol {
             // The function returns a value symbol of an identifier in the short-hand property assignment.
